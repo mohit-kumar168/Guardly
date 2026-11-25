@@ -1,0 +1,8 @@
+{
+  "name": "@guardly/root",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}
