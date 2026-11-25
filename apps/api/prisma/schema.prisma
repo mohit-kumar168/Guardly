@@ -1,0 +1,382 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  PARENT
+  CHILD
+}
+
+enum DevicePlatform {
+  ANDROID
+  IOS
+  BROWSER
+}
+
+enum DeviceStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+}
+
+enum RuleType {
+  APP
+  WEBSITE
+}
+
+enum RuleAction {
+  ALLOW
+  BLOCK
+}
+
+enum OverrideType {
+  EXTRA_TIME
+  LOCK_NOW
+}
+
+enum ConsentStatus {
+  NOT_ASKED
+  PENDING
+  GRANTED
+  DECLINED
+  REVOKED
+}
+
+enum ScreenshotSessionStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  DECLINED
+  UNSUPPORTED
+}
+
+enum CaptureStatus {
+  PENDING
+  CAPTURED
+  FAILED
+}
+
+enum NotificationType {
+  DEVICE_PAIRED
+  DEVICE_ONLINE
+  DEVICE_OFFLINE
+  SCREEN_TIME_LIMIT_REACHED
+  BLOCKED_ATTEMPT
+  SCREENSHOT_SESSION_STARTED
+  SCREENSHOT_SESSION_ENDED
+  SCREENSHOT_FAILED
+  PARENT_INVITATION
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  role         UserRole
+  name         String
+  email        String?   @unique
+  passwordHash String?
+  isActive     Boolean   @default(true)
+  familyId     String?   @db.Uuid
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  family Family? @relation(fields: [familyId], references: [id], onDelete: SetNull)
+
+  sessions               Session[]
+  devices                Device[]
+  policy                 Policy?
+  overridesForChild      Override[]          @relation("OverrideChild")
+  overridesCreated       Override[]          @relation("OverrideCreator")
+  screenshotSessionsMade ScreenshotSession[]
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+
+  @@index([familyId, role])
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @db.Uuid
+  deviceId         String?   @db.Uuid
+  refreshTokenHash String    @unique
+  pushToken        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@map("sessions")
+}
+
+model Family {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members     User[]
+  invitations Invitation[]
+  policies    Policy[]
+  auditLogs   AuditLog[]
+
+  @@map("families")
+}
+
+model Invitation {
+  id         String    @id @default(uuid()) @db.Uuid
+  familyId   String    @db.Uuid
+  email      String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([email])
+  @@map("invitations")
+}
+
+model Device {
+  id               String         @id @default(uuid()) @db.Uuid
+  childId          String         @db.Uuid
+  name             String
+  platform         DevicePlatform
+  osVersion        String?
+  appVersion       String?
+  status           DeviceStatus   @default(PENDING)
+  pairingCodeHash  String?        @unique
+  pairingExpiresAt DateTime?
+  isOnline         Boolean        @default(false)
+  lastSeenAt       DateTime?
+  pairedAt         DateTime?
+  revokedAt        DateTime?
+
+  screenshotsEnabled    Boolean       @default(false)
+  canCaptureScreenshots Boolean       @default(false)
+  screenshotConsent     ConsentStatus @default(NOT_ASKED)
+  screenshotConsentAt   DateTime?
+  disclosureVersion     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  child User @relation(fields: [childId], references: [id], onDelete: Cascade)
+
+  sessions           Session[]
+  dailyScreenTimes   DailyScreenTime[]
+  appUsages          AppUsage[]
+  websiteUsages      WebsiteUsage[]
+  screenshotSessions ScreenshotSession[]
+
+  @@index([childId, status])
+  @@index([status, isOnline, lastSeenAt])
+  @@map("devices")
+}
+
+model Policy {
+  id                String   @id @default(uuid()) @db.Uuid
+  familyId          String   @db.Uuid
+  childId           String?  @unique @db.Uuid
+  isActive          Boolean  @default(true)
+  dailyLimitMinutes Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  child  User?  @relation(fields: [childId], references: [id], onDelete: Cascade)
+
+  rules     PolicyRule[]
+  schedules Schedule[]
+
+  @@index([familyId])
+  @@map("policies")
+}
+
+model PolicyRule {
+  id        String     @id @default(uuid()) @db.Uuid
+  policyId  String     @db.Uuid
+  type      RuleType
+  target    String
+  label     String?
+  action    RuleAction
+  expiresAt DateTime?
+  createdAt DateTime   @default(now())
+
+  policy Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@unique([policyId, type, target])
+  @@map("policy_rules")
+}
+
+model Schedule {
+  id        String   @id @default(uuid()) @db.Uuid
+  policyId  String   @db.Uuid
+  name      String
+  days      Int[]
+  startTime String
+  endTime   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  policy Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([policyId])
+  @@map("schedules")
+}
+
+model Override {
+  id           String       @id @default(uuid()) @db.Uuid
+  childId      String       @db.Uuid
+  createdById  String?      @db.Uuid
+  type         OverrideType
+  extraMinutes Int?
+  expiresAt    DateTime
+  createdAt    DateTime     @default(now())
+
+  child     User  @relation("OverrideChild", fields: [childId], references: [id], onDelete: Cascade)
+  createdBy User? @relation("OverrideCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([childId, expiresAt])
+  @@index([createdById])
+  @@map("overrides")
+}
+
+model DailyScreenTime {
+  id              String   @id @default(uuid()) @db.Uuid
+  deviceId        String   @db.Uuid
+  date            DateTime @db.Date
+  totalSeconds    Int      @default(0)
+  blockedAttempts Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, date])
+  @@map("daily_screen_time")
+}
+
+model AppUsage {
+  id       String   @id @default(uuid()) @db.Uuid
+  deviceId String   @db.Uuid
+  date     DateTime @db.Date
+  appId    String
+  appName  String
+  seconds  Int      @default(0)
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, date, appId])
+  @@map("app_usage")
+}
+
+model WebsiteUsage {
+  id       String   @id @default(uuid()) @db.Uuid
+  deviceId String   @db.Uuid
+  date     DateTime @db.Date
+  domain   String
+  visits   Int      @default(0)
+  seconds  Int      @default(0)
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, date, domain])
+  @@map("website_usage")
+}
+
+model ScreenshotSession {
+  id              String                  @id @default(uuid()) @db.Uuid
+  deviceId        String                  @db.Uuid
+  createdById     String?                 @db.Uuid
+  intervalMinutes Int
+  startsAt        DateTime
+  endsAt          DateTime
+  status          ScreenshotSessionStatus @default(SCHEDULED)
+  statusReason    String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  device    Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  createdBy User?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  screenshots Screenshot[]
+
+  @@index([deviceId, status])
+  @@index([status, startsAt])
+  @@index([createdById])
+  @@map("screenshot_sessions")
+}
+
+model Screenshot {
+  id            String        @id @default(uuid()) @db.Uuid
+  sessionId     String        @db.Uuid
+  status        CaptureStatus @default(PENDING)
+  scheduledFor  DateTime
+  capturedAt    DateTime?
+  storagePath   String?
+  failureReason String?
+  viewedAt      DateTime?
+  deleteAfter   DateTime?
+  createdAt     DateTime      @default(now())
+
+  session ScreenshotSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, scheduledFor])
+  @@index([deleteAfter])
+  @@map("screenshots")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  sentAt    DateTime?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  familyId   String?  @db.Uuid
+  userId     String?  @db.Uuid
+  action     String
+  targetType String?
+  targetId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  family Family? @relation(fields: [familyId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([familyId, createdAt])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
